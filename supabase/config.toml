@@ -1,1 +1,4 @@
 project_id = "akkyfswcrjrucoghvenx"
+
+[functions.gemini-voice]
+verify_jwt = false
