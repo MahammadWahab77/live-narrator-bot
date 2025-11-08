@@ -3,10 +3,13 @@ import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { Mic, MicOff, LogOut, Loader2 } from "lucide-react";
+import { Mic, MicOff, LogOut, Loader2, Volume2 } from "lucide-react";
 import { User } from "@supabase/supabase-js";
 import StageIndicator from "@/components/StageIndicator";
 import TranscriptDisplay from "@/components/TranscriptDisplay";
+import VoiceVisualizer from "@/components/VoiceVisualizer";
+import { AudioRecorder, encodeAudioForAPI } from "@/utils/audioRecorder";
+import { initAudioPlayer, playAudioChunk } from "@/utils/audioPlayer";
 
 const stages = [
   { id: 1, title: "Welcome", description: "Introduction to Maya" },
@@ -23,9 +26,12 @@ const VoiceOnboarding = () => {
   const [currentStage, setCurrentStage] = useState(1);
   const [isConnected, setIsConnected] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
   const [transcript, setTranscript] = useState<Array<{ role: string; text: string }>>([]);
   const [loading, setLoading] = useState(true);
   const wsRef = useRef<WebSocket | null>(null);
+  const recorderRef = useRef<AudioRecorder | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -78,76 +84,160 @@ const VoiceOnboarding = () => {
     }
   };
 
-  const connectWebSocket = () => {
-    const projectId = import.meta.env.VITE_SUPABASE_PROJECT_ID;
-    const ws = new WebSocket(
-      `wss://akkyfswcrjrucoghvenx.supabase.co/functions/v1/gemini-voice`
-    );
-
-    ws.onopen = () => {
-      console.log("WebSocket connected");
-      setIsConnected(true);
-      toast({
-        title: "Connected",
-        description: "Voice assistant is ready",
-      });
-      
-      ws.send(JSON.stringify({
-        type: "setup",
-        stage: currentStage,
-        stageName: stages[currentStage - 1].title,
-      }));
-    };
-
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      console.log("Received:", data);
-
-      if (data.type === "transcript") {
-        setTranscript((prev) => [...prev, { role: data.role, text: data.text }]);
-        
-        if (user) {
-          supabase.from("onboarding_sessions").upsert({
-            user_id: user.id,
-            current_stage: currentStage,
-            stage_data: { transcript: [...transcript, { role: data.role, text: data.text }] },
-          });
-        }
-      } else if (data.type === "stage_complete") {
-        if (currentStage < 7) {
-          const nextStage = currentStage + 1;
-          setCurrentStage(nextStage);
-          toast({
-            title: "Stage Complete!",
-            description: `Moving to ${stages[nextStage - 1].title}`,
-          });
-        }
+  const connectWebSocket = async () => {
+    try {
+      // Initialize audio context
+      if (!audioContextRef.current) {
+        audioContextRef.current = new AudioContext({ sampleRate: 24000 });
+        initAudioPlayer(audioContextRef.current);
       }
-    };
 
-    ws.onerror = (error) => {
-      console.error("WebSocket error:", error);
+      const ws = new WebSocket(
+        `wss://akkyfswcrjrucoghvenx.supabase.co/functions/v1/gemini-voice`
+      );
+
+      ws.onopen = async () => {
+        console.log("WebSocket connected");
+        setIsConnected(true);
+        toast({
+          title: "Connected",
+          description: "Maya is ready to talk with you",
+        });
+
+        // Send setup message
+        ws.send(
+          JSON.stringify({
+            type: "setup",
+            stage: currentStage,
+            stageName: stages[currentStage - 1].title,
+          })
+        );
+
+        // Start audio recording
+        try {
+          recorderRef.current = new AudioRecorder((audioData) => {
+            if (ws.readyState === WebSocket.OPEN) {
+              const encodedAudio = encodeAudioForAPI(audioData);
+              ws.send(
+                JSON.stringify({
+                  type: "audio",
+                  data: encodedAudio,
+                })
+              );
+            }
+          });
+
+          await recorderRef.current.start();
+          setIsRecording(true);
+          console.log("Audio recording started");
+        } catch (error) {
+          console.error("Failed to start recording:", error);
+          toast({
+            title: "Microphone Error",
+            description: "Please allow microphone access to continue",
+            variant: "destructive",
+          });
+        }
+      };
+
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        console.log("Received:", data);
+
+        if (data.type === "transcript") {
+          const newMessage = { role: data.role, text: data.text };
+          setTranscript((prev) => [...prev, newMessage]);
+
+          if (data.role === "assistant") {
+            setIsSpeaking(false);
+          }
+
+          // Save to database
+          if (user) {
+            const currentTranscript = [...transcript, newMessage];
+            supabase.from("onboarding_sessions").upsert({
+              user_id: user.id,
+              current_stage: currentStage,
+              stage_data: { transcript: currentTranscript },
+            });
+          }
+        } else if (data.type === "audio") {
+          // Play audio chunk
+          setIsSpeaking(true);
+          if (audioContextRef.current) {
+            playAudioChunk(data.data, audioContextRef.current);
+          }
+        } else if (data.type === "stage_complete") {
+          if (currentStage < 7) {
+            const nextStage = currentStage + 1;
+            setCurrentStage(nextStage);
+            toast({
+              title: "Stage Complete!",
+              description: `Moving to ${stages[nextStage - 1].title}`,
+            });
+
+            // Send new stage setup
+            ws.send(
+              JSON.stringify({
+                type: "setup",
+                stage: nextStage,
+                stageName: stages[nextStage - 1].title,
+              })
+            );
+          } else {
+            toast({
+              title: "Onboarding Complete!",
+              description: "You've completed all stages successfully!",
+            });
+          }
+        }
+      };
+
+      ws.onerror = (error) => {
+        console.error("WebSocket error:", error);
+        toast({
+          title: "Connection Error",
+          description: "Failed to connect to Maya",
+          variant: "destructive",
+        });
+      };
+
+      ws.onclose = () => {
+        console.log("WebSocket disconnected");
+        setIsConnected(false);
+        setIsRecording(false);
+        setIsSpeaking(false);
+        
+        if (recorderRef.current) {
+          recorderRef.current.stop();
+          recorderRef.current = null;
+        }
+      };
+
+      wsRef.current = ws;
+    } catch (error) {
+      console.error("Error connecting:", error);
       toast({
-        title: "Connection Error",
-        description: "Failed to connect to voice assistant",
+        title: "Error",
+        description: "Failed to initialize voice chat",
         variant: "destructive",
       });
-    };
-
-    ws.onclose = () => {
-      console.log("WebSocket disconnected");
-      setIsConnected(false);
-      setIsRecording(false);
-    };
-
-    wsRef.current = ws;
+    }
   };
 
   const disconnectWebSocket = () => {
+    if (recorderRef.current) {
+      recorderRef.current.stop();
+      recorderRef.current = null;
+    }
+    
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
     }
+    
+    setIsRecording(false);
+    setIsSpeaking(false);
   };
 
   const toggleConnection = () => {
@@ -189,8 +279,11 @@ const VoiceOnboarding = () => {
         <div className="mt-8 bg-card border border-border rounded-2xl shadow-lg p-6">
           <div className="flex items-center justify-between mb-6">
             <div>
-              <h2 className="text-xl font-semibold text-foreground">
+              <h2 className="text-xl font-semibold text-foreground flex items-center gap-2">
                 {stages[currentStage - 1].title}
+                {isSpeaking && (
+                  <Volume2 className="h-5 w-5 text-accent animate-pulse" />
+                )}
               </h2>
               <p className="text-sm text-muted-foreground">
                 {stages[currentStage - 1].description}
@@ -203,10 +296,12 @@ const VoiceOnboarding = () => {
                 }`}
               />
               <span className="text-sm text-muted-foreground">
-                {isConnected ? "Connected" : "Disconnected"}
+                {isConnected ? (isRecording ? "Listening..." : "Connected") : "Disconnected"}
               </span>
             </div>
           </div>
+
+          <VoiceVisualizer isActive={isConnected} isSpeaking={isSpeaking} />
 
           <TranscriptDisplay transcript={transcript} />
 

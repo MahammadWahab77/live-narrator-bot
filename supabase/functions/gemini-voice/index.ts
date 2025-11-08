@@ -3,13 +3,88 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 const GOOGLE_API_KEY = Deno.env.get("GOOGLE_API_KEY");
 
 const stagePrompts: Record<number, string> = {
-  1: `You are Maya, a friendly onboarding assistant for NxtWave's CCBP 4.0 program. Welcome the user warmly and introduce yourself. Explain that you'll guide them through understanding the program. Ask their name and what brings them here today. Keep responses under 3 sentences.`,
-  2: `You are Maya. Explain NxtWave's CCBP 4.0 program value: it's an intensive 6-month training program that transforms complete beginners into industry-ready developers. Highlight that 100% placement assistance is provided. Ask if they have any questions about the program structure.`,
-  3: `You are Maya. Explain the payment structure: The program fee is ₹3,00,000. However, students can start with just ₹30,000 upfront through the ISA model. The remaining amount is paid as a percentage of salary after getting placed (only when earning above ₹3 LPA). Ask if this sounds feasible to them.`,
-  4: `You are Maya. Check scholarship eligibility. Ask: 1) Are they a recent graduate or final year student? 2) Do they have any prior coding experience? 3) Their current academic background. Explain that scholarships up to 30% are available based on profile. Provide encouraging feedback.`,
-  5: `You are Maya. Present EMI options for the ₹30,000 upfront payment: Option A: Pay in full (no interest). Option B: 3 months EMI (₹11,000/month). Option C: 6 months EMI (₹5,700/month). Ask which option works best for their financial situation.`,
-  6: `You are Maya. Explain required documents: 1) Government ID proof (Aadhaar/PAN), 2) Latest educational certificates, 3) Income proof or parent's income proof for scholarship, 4) Bank account details for EMI setup. Ask if they have these ready or need time to arrange them.`,
-  7: `You are Maya. Congratulate them on completing the onboarding! Summarize: They'll receive an email with enrollment link, document upload portal access, and counselor contact. The next cohort starts in 2 weeks. Express excitement about their journey. Ask if they have any final questions.`,
+  1: `You are Maya, a friendly onboarding assistant for NxtWave's CCBP 4.0 program. 
+  
+Introduce yourself warmly: "Hi! I'm Maya, your onboarding assistant. I'll help you finish everything quickly and easily. Congratulations on taking the next step toward your career journey! This will take just a few minutes — and by the end, you'll be fully ready to start learning."
+
+Then ask: "Is this a good time to begin? Would you like me to explain what's coming next?"
+
+Keep responses conversational, warm, and under 3 sentences at a time.`,
+
+  2: `You are Maya. Explain NxtWave's program value clearly and engagingly.
+
+Say: "In most colleges, students learn theory — like drawing an engine instead of driving it. But here at NxtWave, we make learning practical. Students build real projects that companies actually value."
+
+Explain: "Our 6 Growth Cycles take students from complete beginner to job-ready, step-by-step. We start from scratch — no coding background needed. Students create 8-10 real-world projects by the end."
+
+Ask: "Would you like to know more about how this process works, or shall we continue?"
+
+Be enthusiastic and build excitement about the program.`,
+
+  3: `You are Maya. Explain the payment structure clearly with all 4 options.
+
+Say: "Let's talk about the investment. We have 4 flexible payment options to suit different needs."
+
+Explain each:
+1. Full Payment: ₹3,00,000 paid upfront with discount
+2. Pay After Placement (ISA): Start with just ₹30,000. Pay remaining only after getting placed earning above ₹3 LPA
+3. EMI Options: Split ₹30,000 into 3 or 6 months
+4. Scholarship: Up to 30% discount based on profile
+
+Ask: "Which payment option interests you most?" 
+
+Be clear, patient, and helpful with financial details.`,
+
+  4: `You are Maya checking scholarship eligibility.
+
+Ask these questions one by one:
+1. "Are you a recent graduate or final year student?"
+2. "Do you have any prior coding experience?"
+3. "What's your current academic background?"
+
+Based on responses, provide encouraging feedback like: "That's great! You're potentially eligible for scholarships up to 30%. Our team will review your profile in detail."
+
+Be supportive and encouraging throughout.`,
+
+  5: `You are Maya presenting EMI options for the ₹30,000 upfront payment.
+
+Present clearly:
+- Option A: Pay ₹30,000 in full (no interest, easiest)
+- Option B: 3 months EMI at ₹11,000/month (small interest)
+- Option C: 6 months EMI at ₹5,700/month (more affordable monthly)
+
+Ask: "Which option works best for your financial situation? There's no pressure — take your time to think."
+
+Be understanding and patient with financial decisions.`,
+
+  6: `You are Maya explaining required documents.
+
+Say: "Almost there! To complete your enrollment, we'll need a few documents:"
+
+List clearly:
+1. Government ID proof (Aadhaar or PAN card)
+2. Latest educational certificates
+3. Income proof or parent's income proof (for scholarship)
+4. Bank account details (for EMI setup)
+
+Ask: "Do you have these ready, or would you like a few days to arrange them?"
+
+Be helpful and accommodating.`,
+
+  7: `You are Maya congratulating on completion!
+
+Say enthusiastically: "Congratulations! You've completed the onboarding process! You're all set to begin your journey with NxtWave."
+
+Summarize: "You'll receive an email shortly with:
+- Your enrollment link
+- Document upload portal access
+- Your personal counselor's contact details
+
+The next cohort starts in 2 weeks. We're excited to have you!"
+
+Ask: "Do you have any final questions for me?"
+
+Be warm, congratulatory, and helpful with any last questions.`,
 };
 
 serve(async (req) => {
@@ -23,7 +98,7 @@ serve(async (req) => {
   const { socket, response } = Deno.upgradeWebSocket(req);
   let currentStage = 1;
   let geminiWs: WebSocket | null = null;
-  let conversationHistory: any[] = [];
+  let isGeminiReady = false;
 
   socket.onopen = () => {
     console.log("Client WebSocket connected");
@@ -32,20 +107,27 @@ serve(async (req) => {
   socket.onmessage = async (event) => {
     try {
       const message = JSON.parse(event.data);
-      console.log("Received from client:", message);
+      console.log("Received from client:", message.type);
 
       if (message.type === "setup") {
         currentStage = message.stage || 1;
         const stageName = message.stageName || "Welcome";
-        
-        // Connect to Gemini
+        console.log(`Setting up stage ${currentStage}: ${stageName}`);
+
+        // Close existing Gemini connection if any
+        if (geminiWs && geminiWs.readyState === WebSocket.OPEN) {
+          geminiWs.close();
+        }
+
+        // Connect to Gemini LIVE API
         const geminiUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${GOOGLE_API_KEY}`;
         geminiWs = new WebSocket(geminiUrl);
+        isGeminiReady = false;
 
         geminiWs.onopen = () => {
-          console.log("Connected to Gemini");
-          
-          // Setup with system instructions
+          console.log("Connected to Gemini LIVE API");
+
+          // Send setup configuration
           const setupMessage = {
             setup: {
               model: "models/gemini-2.0-flash-exp",
@@ -54,55 +136,69 @@ serve(async (req) => {
                 speech_config: {
                   voice_config: {
                     prebuilt_voice_config: {
-                      voice_name: "Puck"
-                    }
-                  }
-                }
+                      voice_name: "Puck",
+                    },
+                  },
+                },
               },
               system_instruction: {
-                parts: [{
-                  text: stagePrompts[currentStage] || stagePrompts[1]
-                }]
-              }
-            }
+                parts: [
+                  {
+                    text: stagePrompts[currentStage] || stagePrompts[1],
+                  },
+                ],
+              },
+            },
           };
-          
+
           geminiWs?.send(JSON.stringify(setupMessage));
           console.log("Sent setup to Gemini for stage:", stageName);
+          isGeminiReady = true;
         };
 
         geminiWs.onmessage = (geminiEvent) => {
           try {
             const data = JSON.parse(geminiEvent.data);
-            console.log("Received from Gemini:", data);
+
+            // Handle setup complete
+            if (data.setupComplete) {
+              console.log("Gemini setup complete");
+              return;
+            }
 
             if (data.serverContent?.modelTurn?.parts) {
               const parts = data.serverContent.modelTurn.parts;
-              
-              // Handle text response
+
+              // Handle text response (for transcript)
               const textPart = parts.find((p: any) => p.text);
-              if (textPart) {
-                socket.send(JSON.stringify({
-                  type: "transcript",
-                  role: "assistant",
-                  text: textPart.text
-                }));
-                conversationHistory.push({ role: "model", text: textPart.text });
+              if (textPart && textPart.text) {
+                console.log("Gemini text:", textPart.text.substring(0, 50));
+                socket.send(
+                  JSON.stringify({
+                    type: "transcript",
+                    role: "assistant",
+                    text: textPart.text,
+                  })
+                );
               }
 
               // Handle audio response
-              const audioPart = parts.find((p: any) => p.inlineData?.mimeType === "audio/pcm");
-              if (audioPart) {
-                socket.send(JSON.stringify({
-                  type: "audio",
-                  data: audioPart.inlineData.data
-                }));
+              const audioPart = parts.find(
+                (p: any) => p.inlineData?.mimeType === "audio/pcm"
+              );
+              if (audioPart?.inlineData?.data) {
+                socket.send(
+                  JSON.stringify({
+                    type: "audio",
+                    data: audioPart.inlineData.data,
+                  })
+                );
               }
             }
 
-            // Check for turn complete
+            // Handle turn complete
             if (data.serverContent?.turnComplete) {
-              console.log("Turn complete");
+              console.log("Gemini turn complete");
             }
           } catch (error) {
             console.error("Error processing Gemini message:", error);
@@ -111,63 +207,53 @@ serve(async (req) => {
 
         geminiWs.onerror = (error) => {
           console.error("Gemini WebSocket error:", error);
-          socket.send(JSON.stringify({ type: "error", message: "Gemini connection error" }));
+          socket.send(
+            JSON.stringify({
+              type: "error",
+              message: "Gemini connection error",
+            })
+          );
         };
 
         geminiWs.onclose = () => {
           console.log("Gemini WebSocket disconnected");
+          isGeminiReady = false;
         };
-      } else if (message.type === "audio" && geminiWs) {
+      } else if (message.type === "audio" && geminiWs && isGeminiReady) {
         // Forward audio to Gemini
-        geminiWs.send(JSON.stringify({
-          client_content: {
-            turns: [{
-              role: "user",
-              parts: [{
-                inline_data: {
-                  mime_type: "audio/pcm",
-                  data: message.data
-                }
-              }]
-            }],
-            turn_complete: true
-          }
-        }));
-      } else if (message.type === "text" && geminiWs) {
-        // Forward text to Gemini
-        conversationHistory.push({ role: "user", text: message.text });
-        
-        socket.send(JSON.stringify({
-          type: "transcript",
-          role: "user",
-          text: message.text
-        }));
-
-        geminiWs.send(JSON.stringify({
-          client_content: {
-            turns: [{
-              role: "user",
-              parts: [{ text: message.text }]
-            }],
-            turn_complete: true
-          }
-        }));
+        geminiWs.send(
+          JSON.stringify({
+            realtimeInput: {
+              mediaChunks: [
+                {
+                  mimeType: "audio/pcm",
+                  data: message.data,
+                },
+              ],
+            },
+          })
+        );
       }
     } catch (error) {
       console.error("Error handling client message:", error);
-      const errorMessage = error instanceof Error ? error.message : "Unknown error";
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error";
       socket.send(JSON.stringify({ type: "error", message: errorMessage }));
     }
   };
 
   socket.onclose = () => {
     console.log("Client WebSocket disconnected");
-    geminiWs?.close();
+    if (geminiWs) {
+      geminiWs.close();
+    }
   };
 
   socket.onerror = (error) => {
     console.error("Client WebSocket error:", error);
-    geminiWs?.close();
+    if (geminiWs) {
+      geminiWs.close();
+    }
   };
 
   return response;
