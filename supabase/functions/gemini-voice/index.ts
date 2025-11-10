@@ -156,8 +156,25 @@ serve(async (req) => {
           isGeminiReady = true;
         };
 
-        geminiWs.onmessage = (geminiEvent) => {
+        geminiWs.onmessage = async (geminiEvent) => {
           try {
+            // Check if message is a Blob (binary audio data)
+            if (geminiEvent.data instanceof Blob) {
+              console.log("Received audio blob from Gemini");
+              const arrayBuffer = await geminiEvent.data.arrayBuffer();
+              const base64Audio = btoa(
+                String.fromCharCode(...new Uint8Array(arrayBuffer))
+              );
+              socket.send(
+                JSON.stringify({
+                  type: "audio",
+                  data: base64Audio,
+                })
+              );
+              return;
+            }
+
+            // Handle JSON messages
             const data = JSON.parse(geminiEvent.data);
 
             // Handle setup complete
