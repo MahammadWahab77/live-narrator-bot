@@ -61,26 +61,55 @@ const VoiceOnboarding = () => {
   }, [navigate]);
 
   const loadOnboardingSession = async (userId: string) => {
-    const { data, error } = await supabase
-      .from("onboarding_sessions")
-      .select("*")
-      .eq("user_id", userId)
-      .maybeSingle();
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("onboarding_sessions")
+        .select("*")
+        .eq("user_id", userId)
+        .maybeSingle();
 
-    if (data) {
-      setCurrentStage(data.current_stage);
-      if (data.stage_data && typeof data.stage_data === 'object' && 'transcript' in data.stage_data) {
-        const stageData = data.stage_data as { transcript?: Array<{ role: string; text: string }> };
-        if (stageData.transcript) {
-          setTranscript(stageData.transcript);
+      if (error && error.code !== "PGRST116") throw error;
+
+      if (data) {
+        setCurrentStage(data.current_stage);
+        
+        // Load full transcript history from new column or fallback to old structure
+        const fullTranscript = data.full_transcript as any[];
+        const stageData = data.stage_data as any;
+        const savedTranscript = fullTranscript || stageData?.transcript || [];
+        setTranscript(savedTranscript);
+        
+        console.log(`Loaded session - Transcript has ${savedTranscript.length} messages`);
+        
+        if (savedTranscript.length > 0) {
+          toast({
+            title: "Welcome back!",
+            description: `Continuing from Stage ${data.current_stage}. Maya will remember your conversation.`,
+          });
         }
+      } else {
+        // Create new session
+        const { error: insertError } = await supabase
+          .from("onboarding_sessions")
+          .insert({
+            user_id: userId,
+            current_stage: 1,
+            full_transcript: [],
+            completed: false,
+          });
+
+        if (insertError) throw insertError;
       }
-    } else if (!error || error.code === "PGRST116") {
-      await supabase.from("onboarding_sessions").insert({
-        user_id: userId,
-        current_stage: 1,
-        stage_data: { transcript: [] },
+    } catch (error) {
+      console.error("Error loading session:", error);
+      toast({
+        title: "Error",
+        description: "Failed to load your session",
+        variant: "destructive",
       });
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -108,12 +137,13 @@ const VoiceOnboarding = () => {
           description: "Maya is ready to talk with you",
         });
 
-        // Send setup message
+        // Send setup message with conversation history
         ws.send(
           JSON.stringify({
             type: "setup",
             stage: currentStage,
             stageName: stages[currentStage - 1].title,
+            conversationHistory: transcript,
           })
         );
 
@@ -148,22 +178,57 @@ const VoiceOnboarding = () => {
         const data = JSON.parse(event.data);
         console.log("Received:", data);
 
+        if (data.type === "info") {
+          toast({
+            title: "Reconnecting",
+            description: data.message,
+          });
+          return;
+        }
+        
+        if (data.type === "error") {
+          toast({
+            title: "Connection Error",
+            description: data.message,
+            variant: "destructive",
+          });
+          return;
+        }
+
+        if (data.type === "ping") {
+          return; // Ignore heartbeat
+        }
+
         if (data.type === "transcript") {
-          const newMessage = { role: data.role, text: data.text };
-          setTranscript((prev) => [...prev, newMessage]);
+          const newMessage = {
+            role: data.role,
+            text: data.text,
+            timestamp: new Date().toISOString(),
+            stage: currentStage,
+            stageName: stages[currentStage - 1].title,
+          };
+          
+          setTranscript((prev) => {
+            const updated = [...prev, newMessage];
+            
+            // Save to database with enhanced details
+            if (user) {
+              supabase.from("onboarding_sessions").upsert({
+                user_id: user.id,
+                current_stage: currentStage,
+                full_transcript: updated,
+                stage_data: { 
+                  lastMessage: newMessage,
+                  totalMessages: updated.length,
+                },
+              });
+            }
+            
+            return updated;
+          });
 
           if (data.role === "assistant") {
             setIsSpeaking(false);
-          }
-
-          // Save to database
-          if (user) {
-            const currentTranscript = [...transcript, newMessage];
-            supabase.from("onboarding_sessions").upsert({
-              user_id: user.id,
-              current_stage: currentStage,
-              stage_data: { transcript: currentTranscript },
-            });
           }
         } else if (data.type === "audio") {
           // Play audio chunk
@@ -206,11 +271,30 @@ const VoiceOnboarding = () => {
         });
       };
 
-      ws.onclose = () => {
-        console.log("WebSocket disconnected");
-        setIsConnected(false);
-        setIsRecording(false);
-        setIsSpeaking(false);
+      ws.onclose = (event) => {
+        console.log("WebSocket closed", event.code, event.reason);
+        
+        // Code 1000 = normal closure (user clicked disconnect)
+        // Anything else = unexpected closure
+        if (event.code !== 1000) {
+          toast({
+            title: "Connection Lost",
+            description: "Attempting to reconnect...",
+            variant: "destructive",
+          });
+          
+          // Attempt to reconnect after 3 seconds
+          setTimeout(() => {
+            if (!isConnected) {
+              connectWebSocket();
+            }
+          }, 3000);
+        } else {
+          // User intentionally disconnected
+          setIsConnected(false);
+          setIsRecording(false);
+          setIsSpeaking(false);
+        }
         
         if (recorderRef.current) {
           recorderRef.current.stop();
@@ -236,7 +320,7 @@ const VoiceOnboarding = () => {
     }
     
     if (wsRef.current) {
-      wsRef.current.close();
+      wsRef.current.close(1000, "User disconnected"); // Normal closure
       wsRef.current = null;
     }
 
@@ -247,6 +331,7 @@ const VoiceOnboarding = () => {
 
     clearAudioQueue();
     
+    setIsConnected(false);
     setIsRecording(false);
     setIsSpeaking(false);
   };
