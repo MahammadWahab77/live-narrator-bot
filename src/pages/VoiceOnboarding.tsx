@@ -65,7 +65,7 @@ const VoiceOnboarding = () => {
       .from("onboarding_sessions")
       .select("*")
       .eq("user_id", userId)
-      .single();
+      .maybeSingle();
 
     if (data) {
       setCurrentStage(data.current_stage);
