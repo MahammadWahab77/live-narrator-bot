@@ -19,7 +19,9 @@ export type Database = {
           completed: boolean | null
           created_at: string | null
           current_stage: number | null
+          full_transcript: Json | null
           id: string
+          last_activity_at: string | null
           stage_data: Json | null
           updated_at: string | null
           user_id: string | null
@@ -28,7 +30,9 @@ export type Database = {
           completed?: boolean | null
           created_at?: string | null
           current_stage?: number | null
+          full_transcript?: Json | null
           id?: string
+          last_activity_at?: string | null
           stage_data?: Json | null
           updated_at?: string | null
           user_id?: string | null
@@ -37,7 +41,9 @@ export type Database = {
           completed?: boolean | null
           created_at?: string | null
           current_stage?: number | null
+          full_transcript?: Json | null
           id?: string
+          last_activity_at?: string | null
           stage_data?: Json | null
           updated_at?: string | null
           user_id?: string | null
