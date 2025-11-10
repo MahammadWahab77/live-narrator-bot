@@ -75,14 +75,30 @@ export const playAudioChunk = (base64Audio: string, audioContext: AudioContext) 
     audioQueueInstance = new AudioQueue(audioContext);
   }
 
-  const binaryString = atob(base64Audio);
-  const bytes = new Uint8Array(binaryString.length);
-  for (let i = 0; i < binaryString.length; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
+  try {
+    const binaryString = atob(base64Audio);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
 
-  const int16Data = new Int16Array(bytes.buffer);
-  audioQueueInstance.addToQueue(int16Data);
+    // Ensure even byte length for Int16Array
+    let alignedBytes = bytes;
+    if (bytes.length % 2 !== 0) {
+      console.warn('Odd byte length detected, padding with zero byte');
+      alignedBytes = new Uint8Array(bytes.length + 1);
+      alignedBytes.set(bytes);
+      alignedBytes[bytes.length] = 0;
+    }
+
+    console.log(`Audio chunk: ${alignedBytes.length} bytes (${alignedBytes.length / 2} samples)`);
+
+    const int16Data = new Int16Array(alignedBytes.buffer);
+    audioQueueInstance.addToQueue(int16Data);
+  } catch (error) {
+    console.error("Error processing audio chunk:", error);
+    console.error("Base64 length:", base64Audio.length);
+  }
 };
 
 export const clearAudioQueue = () => {
