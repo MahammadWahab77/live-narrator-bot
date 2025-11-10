@@ -158,13 +158,74 @@ serve(async (req) => {
 
         geminiWs.onmessage = async (geminiEvent) => {
           try {
-            // Check if message is a Blob (binary audio data)
+            // Check if message is a Blob - try parsing as JSON first
             if (geminiEvent.data instanceof Blob) {
-              console.log("Received audio blob from Gemini");
+              // Some Gemini frames arrive as Blob but contain JSON text (like setupComplete)
+              const text = await geminiEvent.data.text().catch(() => null);
+              if (text) {
+                try {
+                  const data = JSON.parse(text);
+                  
+                  // Handle setup complete
+                  if (data.setupComplete) {
+                    console.log("Gemini setup complete");
+                    return;
+                  }
+
+                  if (data.serverContent?.modelTurn?.parts) {
+                    const parts = data.serverContent.modelTurn.parts;
+
+                    // Handle text response (for transcript)
+                    const textPart = parts.find((p: any) => p.text);
+                    if (textPart && textPart.text) {
+                      console.log("Gemini text:", textPart.text.substring(0, 50));
+                      socket.send(
+                        JSON.stringify({
+                          type: "transcript",
+                          role: "assistant",
+                          text: textPart.text,
+                        })
+                      );
+                    }
+
+                    // Handle audio response with relaxed mime type check
+                    const audioPart = parts.find(
+                      (p: any) => {
+                        const mt = p.inlineData?.mimeType;
+                        return typeof mt === "string" && mt.toLowerCase().startsWith("audio/pcm");
+                      }
+                    );
+                    if (audioPart?.inlineData?.data) {
+                      console.log("Forwarding inline PCM audio data");
+                      socket.send(
+                        JSON.stringify({
+                          type: "audio",
+                          data: audioPart.inlineData.data,
+                        })
+                      );
+                    }
+                  }
+
+                  // Handle turn complete
+                  if (data.serverContent?.turnComplete) {
+                    console.log("Gemini turn complete");
+                  }
+                  return;
+                } catch {
+                  // Not JSON, treat as binary audio below
+                }
+              }
+
+              // Binary PCM audio - convert to base64 in chunks
               const arrayBuffer = await geminiEvent.data.arrayBuffer();
-              
-              // Convert arrayBuffer to base64 in chunks to avoid call stack size exceeded
               const uint8Array = new Uint8Array(arrayBuffer);
+              
+              // Skip obviously tiny blobs that aren't real audio
+              if (uint8Array.length < 100) {
+                console.log(`Skipping tiny blob (${uint8Array.length} bytes)`);
+                return;
+              }
+
               let binary = '';
               const chunkSize = 0x8000; // 32KB chunks
               
@@ -174,6 +235,7 @@ serve(async (req) => {
               }
               
               const base64Audio = btoa(binary);
+              console.log(`Forwarding PCM blob: ${uint8Array.length} bytes`);
               socket.send(
                 JSON.stringify({
                   type: "audio",
@@ -183,7 +245,7 @@ serve(async (req) => {
               return;
             }
 
-            // Handle JSON messages
+            // Handle JSON string messages
             const data = JSON.parse(geminiEvent.data);
 
             // Handle setup complete
@@ -208,11 +270,15 @@ serve(async (req) => {
                 );
               }
 
-              // Handle audio response
+              // Handle audio response with relaxed mime type check
               const audioPart = parts.find(
-                (p: any) => p.inlineData?.mimeType === "audio/pcm"
+                (p: any) => {
+                  const mt = p.inlineData?.mimeType;
+                  return typeof mt === "string" && mt.toLowerCase().startsWith("audio/pcm");
+                }
               );
               if (audioPart?.inlineData?.data) {
+                console.log("Forwarding inline PCM audio data");
                 socket.send(
                   JSON.stringify({
                     type: "audio",

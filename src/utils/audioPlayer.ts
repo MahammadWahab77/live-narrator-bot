@@ -95,6 +95,21 @@ export const playAudioChunk = (base64Audio: string, audioContext: AudioContext) 
       alignedBytes[bytes.length] = 0;
     }
 
+    // Safety checks: ignore tiny chunks or JSON-like data
+    if (alignedBytes.length < 100) {
+      console.warn(`Ignoring tiny audio chunk (${alignedBytes.length} bytes)`);
+      return;
+    }
+
+    // Heuristic: drop JSON-like blobs accidentally labeled as audio
+    try {
+      const preview = String.fromCharCode(...Array.from(alignedBytes.slice(0, 32)));
+      if (preview.trim().startsWith("{")) {
+        console.warn("Dropping non-audio blob that looks like JSON");
+        return;
+      }
+    } catch { /* ignore preview errors */ }
+
     console.log(`Audio chunk: ${alignedBytes.length} bytes (${alignedBytes.length / 2} samples)`);
 
     const int16Data = new Int16Array(alignedBytes.buffer);
