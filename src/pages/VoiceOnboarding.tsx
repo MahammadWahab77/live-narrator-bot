@@ -9,7 +9,7 @@ import StageIndicator from "@/components/StageIndicator";
 import TranscriptDisplay from "@/components/TranscriptDisplay";
 import VoiceVisualizer from "@/components/VoiceVisualizer";
 import { AudioRecorder, encodeAudioForAPI } from "@/utils/audioRecorder";
-import { initAudioPlayer, playAudioChunk } from "@/utils/audioPlayer";
+import { initAudioPlayer, playAudioChunk, clearAudioQueue } from "@/utils/audioPlayer";
 
 const stages = [
   { id: 1, title: "Welcome", description: "Introduction to Maya" },
@@ -89,6 +89,10 @@ const VoiceOnboarding = () => {
       // Initialize audio context
       if (!audioContextRef.current) {
         audioContextRef.current = new AudioContext({ sampleRate: 24000 });
+        // Resume audio context on user interaction
+        if (audioContextRef.current.state === 'suspended') {
+          await audioContextRef.current.resume();
+        }
         initAudioPlayer(audioContextRef.current);
       }
 
@@ -235,6 +239,13 @@ const VoiceOnboarding = () => {
       wsRef.current.close();
       wsRef.current = null;
     }
+
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+
+    clearAudioQueue();
     
     setIsRecording(false);
     setIsSpeaking(false);

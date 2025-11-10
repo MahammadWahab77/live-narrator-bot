@@ -2,6 +2,7 @@ class AudioQueue {
   private queue: Int16Array[] = [];
   private isPlaying = false;
   private audioContext: AudioContext;
+  private nextScheduledTime = 0;
 
   constructor(audioContext: AudioContext) {
     this.audioContext = audioContext;
@@ -41,14 +42,16 @@ class AudioQueue {
       source.buffer = audioBuffer;
       source.connect(this.audioContext.destination);
 
-      // Wait for audio to finish before playing next chunk
-      await new Promise<void>((resolve) => {
-        source.onended = () => {
-          resolve();
-          this.playNext();
-        };
-        source.start(0);
-      });
+      // Schedule audio to play seamlessly without gaps
+      const currentTime = this.audioContext.currentTime;
+      const startTime = Math.max(currentTime, this.nextScheduledTime);
+      this.nextScheduledTime = startTime + audioBuffer.duration;
+
+      source.onended = () => {
+        this.playNext();
+      };
+      
+      source.start(startTime);
     } catch (error) {
       console.error("Error playing audio:", error);
       this.playNext();
@@ -58,6 +61,7 @@ class AudioQueue {
   clear() {
     this.queue = [];
     this.isPlaying = false;
+    this.nextScheduledTime = 0;
   }
 }
 

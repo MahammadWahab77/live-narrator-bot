@@ -31,7 +31,7 @@ export class AudioRecorder {
       };
 
       this.source.connect(this.processor);
-      this.processor.connect(this.audioContext.destination);
+      // Don't connect to destination - prevents feedback loop
     } catch (error) {
       console.error("Error accessing microphone:", error);
       throw error;
