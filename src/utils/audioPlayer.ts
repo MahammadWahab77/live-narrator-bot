@@ -24,19 +24,31 @@ class AudioQueue {
     const pcmData = this.queue.shift()!;
 
     try {
+      // Resume audio context if suspended
+      if (this.audioContext.state === 'suspended') {
+        await this.audioContext.resume();
+      }
+
       const audioBuffer = this.audioContext.createBuffer(1, pcmData.length, 24000);
       const channelData = audioBuffer.getChannelData(0);
       
+      // Convert Int16 PCM to Float32 for Web Audio API
       for (let i = 0; i < pcmData.length; i++) {
-        channelData[i] = pcmData[i] / 32768.0;
+        channelData[i] = Math.max(-1, Math.min(1, pcmData[i] / 32768.0));
       }
 
       const source = this.audioContext.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(this.audioContext.destination);
 
-      source.onended = () => this.playNext();
-      source.start(0);
+      // Wait for audio to finish before playing next chunk
+      await new Promise<void>((resolve) => {
+        source.onended = () => {
+          resolve();
+          this.playNext();
+        };
+        source.start(0);
+      });
     } catch (error) {
       console.error("Error playing audio:", error);
       this.playNext();
